@@ -1,8 +1,6 @@
-# 📥 Reddit Video Downloader
+# Reddit Video Downloader
 
 A modern, fast, and user-friendly Reddit video downloader application. It allows you to download Reddit videos with audio (by automatically merging video and audio streams).
-
-![Project Preview](https://via.placeholder.com/800x450.png?text=Reddit+Video+Downloader+Preview)
 
 ## 🌟 Features
 
