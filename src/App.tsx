@@ -208,13 +208,47 @@ function App() {
         <div className="video-card">
           {/* Preview Image */}
           <div className="video-preview">
-            <img
-              src={videoInfo.preview || videoInfo.thumbnail}
-              alt={videoInfo.title}
-              onError={(e) => {
-                (e.target as HTMLImageElement).src = videoInfo.thumbnail
-              }}
-            />
+            {(() => {
+              const isValidUrl = (url?: string) => url && (url.startsWith('http') || url.startsWith('https'));
+              const imgSrc = isValidUrl(videoInfo.preview) ? videoInfo.preview :
+                isValidUrl(videoInfo.thumbnail) ? videoInfo.thumbnail : null;
+
+              if (imgSrc) {
+                return (
+                  <img
+                    src={imgSrc}
+                    alt={videoInfo.title}
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement;
+                      if (target.src !== videoInfo.thumbnail && isValidUrl(videoInfo.thumbnail)) {
+                        target.src = videoInfo.thumbnail;
+                      } else {
+                        target.style.display = 'none';
+                        target.parentElement?.classList.add('no-image');
+                      }
+                    }}
+                  />
+                );
+              } else {
+                return (
+                  <div className="no-image-placeholder" style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-muted)'
+                  }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 64, height: 64, opacity: 0.5 }}>
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                      <circle cx="12" cy="10" r="3" />
+                      <polygon points="10 10 15 10 12.5 14" />
+                    </svg>
+                  </div>
+                );
+              }
+            })()}
             <div className="overlay" />
             {videoInfo.duration > 0 && (
               <span className="duration-badge">
