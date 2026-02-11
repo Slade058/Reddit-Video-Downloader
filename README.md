@@ -73,10 +73,6 @@ Follow these steps to run the project locally.
 4.  Click the **"Download MP4"** button.
 5.  The video will validly download to your device once processing is complete.
 
-## 🤝 Contributing
-
-Contributions are welcome! If you find a bug or want to add a new feature, please open an issue or submit a pull request.
-
 ## 📄 License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
