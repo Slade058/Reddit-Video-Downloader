@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { execFile } from 'child_process';
 import fs from 'fs';
@@ -16,10 +16,49 @@ app.use(express.json());
 // User-Agent to look like a regular browser
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
+interface RedditVideo {
+    fallback_url?: string;
+    scrubber_media_url?: string;
+    dash_url?: string;
+    duration?: number;
+    height?: number;
+    width?: number;
+    is_gif?: boolean;
+}
+
+interface RedditPostData {
+    title: string;
+    subreddit_name_prefixed: string;
+    author: string;
+    thumbnail: string;
+    ups: number;
+    permalink: string;
+    crosspost_parent_list?: Array<{
+        secure_media?: { reddit_video?: RedditVideo };
+        media?: { reddit_video?: RedditVideo };
+    }>;
+    secure_media?: { reddit_video?: RedditVideo };
+    media?: { reddit_video?: RedditVideo };
+    preview?: {
+        images?: Array<{
+            source?: { url?: string };
+        }>;
+    };
+}
+
+interface MediaInfo {
+    videoUrl: string;
+    audioCandidates: string[];
+    duration?: number;
+    height?: number;
+    width?: number;
+    isGif?: boolean;
+}
+
 /**
  * Normalize a Reddit URL to get the JSON endpoint
  */
-function getJsonUrl(url) {
+function getJsonUrl(url: string): string {
     let clean = url.split('?')[0].replace(/\/$/, '');
     // Remove trailing slash and add .json
     if (!clean.endsWith('.json')) {
@@ -31,7 +70,7 @@ function getJsonUrl(url) {
 /**
  * Fetch Reddit post data from the JSON API
  */
-async function fetchRedditData(url) {
+async function fetchRedditData(url: string): Promise<RedditPostData> {
     const jsonUrl = getJsonUrl(url);
     const res = await fetch(jsonUrl, {
         headers: {
@@ -52,34 +91,10 @@ async function fetchRedditData(url) {
         throw new Error('Could not parse Reddit post data');
     }
 
-    return post;
+    return post as RedditPostData;
 }
 
-/**
- * Extract video and audio URLs from Reddit post data
- */
-/**
- * Extract video and audio URLs from Reddit post data
- */
-async function extractMediaUrls(post) {
-    const media = post.secure_media?.reddit_video || post.media?.reddit_video;
-
-    if (!media) {
-        // Check if it's a crosspost
-        if (post.crosspost_parent_list?.length > 0) {
-            const crosspost = post.crosspost_parent_list[0];
-            const crossMedia = crosspost.secure_media?.reddit_video || crosspost.media?.reddit_video;
-            if (crossMedia) {
-                return extractFromRedditVideo(crossMedia);
-            }
-        }
-        throw new Error('Bu post bir Reddit video içermiyor. Sadece Reddit tarafından barındırılan videolar desteklenir (v.redd.it).');
-    }
-
-    return extractFromRedditVideo(media);
-}
-
-async function extractFromRedditVideo(redditVideo) {
+async function extractFromRedditVideo(redditVideo: RedditVideo): Promise<MediaInfo> {
     const videoUrl = redditVideo.fallback_url || redditVideo.scrubber_media_url;
 
     if (!videoUrl) {
@@ -87,7 +102,7 @@ async function extractFromRedditVideo(redditVideo) {
     }
 
     const baseVideo = videoUrl.split('?')[0];
-    let audioCandidates = [];
+    let audioCandidates: string[] = [];
 
     // Method 1: Try to parse DASH manifest if available
     if (redditVideo.dash_url) {
@@ -105,8 +120,7 @@ async function extractFromRedditVideo(redditVideo) {
 
                     if (found.length > 0) {
                         console.log('Found audio in DASH manifest:', found);
-                        // Convert relative URLs to absolute if needed, but Reddit usually gives full or filename
-                        // If filename only, append to base path of dash_url
+                        // Convert relative URLs to absolute if needed
                         const baseUrl = redditVideo.dash_url.substring(0, redditVideo.dash_url.lastIndexOf('/') + 1);
 
                         found.forEach(f => {
@@ -146,26 +160,49 @@ async function extractFromRedditVideo(redditVideo) {
 }
 
 /**
+ * Extract video and audio URLs from Reddit post data
+ */
+async function extractMediaUrls(post: RedditPostData): Promise<MediaInfo> {
+    const media = post.secure_media?.reddit_video || post.media?.reddit_video;
+
+    if (!media) {
+        // Check if it's a crosspost
+        if (post.crosspost_parent_list && post.crosspost_parent_list.length > 0) {
+            const crosspost = post.crosspost_parent_list[0];
+            const crossMedia = crosspost.secure_media?.reddit_video || crosspost.media?.reddit_video;
+            if (crossMedia) {
+                return extractFromRedditVideo(crossMedia);
+            }
+        }
+        throw new Error('Bu post bir Reddit video içermiyor. Sadece Reddit tarafından barındırılan videolar desteklenir (v.redd.it).');
+    }
+
+    return extractFromRedditVideo(media);
+}
+
+/**
  * Download a file from URL to a local path
  */
-async function downloadFile(url, filePath) {
+async function downloadFile(url: string, filePath: string): Promise<boolean> {
     const res = await fetch(url, {
         headers: { 'User-Agent': UA },
     });
 
-    if (!res.ok) {
+    if (!res.ok || !res.body) {
         return false; // Audio might not exist for some videos
     }
 
     const fileStream = fs.createWriteStream(filePath);
-    await pipeline(Readable.fromWeb(res.body), fileStream);
+    // Readable.fromWeb expects a Web stream, but type issues might persist depending on @types/node version.
+    // Casting to any or ignoring potentially if types mismatch, but usually works in recent Node.
+    await pipeline(Readable.fromWeb(res.body as any), fileStream);
     return true;
 }
 
 /**
  * Merge video and audio using ffmpeg
  */
-function mergeWithFfmpeg(videoPath, audioPath, outputPath) {
+function mergeWithFfmpeg(videoPath: string, audioPath: string, outputPath: string): Promise<string> {
     return new Promise((resolve, reject) => {
         const args = [
             '-i', videoPath,
@@ -192,7 +229,7 @@ function mergeWithFfmpeg(videoPath, audioPath, outputPath) {
 /**
  * GET /api/info - Get video info from a Reddit URL
  */
-app.post('/api/info', async (req, res) => {
+app.post('/api/info', async (req: Request, res: Response): Promise<any> => {
     try {
         const { url } = req.body;
 
@@ -231,7 +268,7 @@ app.post('/api/info', async (req, res) => {
             isGif: media.isGif,
             permalink: `https://www.reddit.com${post.permalink}`,
         });
-    } catch (err) {
+    } catch (err: any) {
         console.error('Info error:', err);
         res.status(500).json({ error: err.message || 'Video bilgisi alınamadı' });
     }
@@ -240,7 +277,7 @@ app.post('/api/info', async (req, res) => {
 /**
  * POST /api/download - Download and merge a Reddit video
  */
-app.post('/api/download', async (req, res) => {
+app.post('/api/download', async (req: Request, res: Response): Promise<any> => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reddit-dl-'));
     const videoPath = path.join(tmpDir, 'video.mp4');
     const audioPath = path.join(tmpDir, 'audio.mp4');
@@ -321,7 +358,7 @@ app.post('/api/download', async (req, res) => {
             cleanup(tmpDir);
         });
 
-    } catch (err) {
+    } catch (err: any) {
         console.error('Download error:', err);
         cleanup(tmpDir);
         if (!res.headersSent) {
@@ -330,7 +367,7 @@ app.post('/api/download', async (req, res) => {
     }
 });
 
-function cleanup(dir) {
+function cleanup(dir: string) {
     try {
         fs.rmSync(dir, { recursive: true, force: true });
     } catch (e) {
@@ -339,5 +376,5 @@ function cleanup(dir) {
 }
 
 app.listen(PORT, () => {
-    console.log(`🚀 Reddit Video Downloader API running on http://localhost:${PORT}`);
+    console.log(`🚀 Reddit Video Downloader API (TS) running on http://localhost:${PORT}`);
 });
