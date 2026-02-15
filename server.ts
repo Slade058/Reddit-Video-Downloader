@@ -1,4 +1,5 @@
-import express, { Request, Response } from 'express';
+import express from 'express';
+import type { Request, Response } from 'express';
 import cors from 'cors';
 import { execFile } from 'child_process';
 import fs from 'fs';
@@ -83,7 +84,7 @@ async function fetchRedditData(url: string): Promise<RedditPostData> {
         throw new Error(`Reddit API returned ${res.status}: ${res.statusText}`);
     }
 
-    const data = await res.json();
+    const data = await res.json() as any;
 
     // Reddit returns an array of listings
     const post = data?.[0]?.data?.children?.[0]?.data;
@@ -214,7 +215,7 @@ function mergeWithFfmpeg(videoPath: string, audioPath: string, outputPath: strin
             outputPath,
         ];
 
-        execFile('ffmpeg', args, { timeout: 60000 }, (error, stdout, stderr) => {
+        execFile('ffmpeg', args, { timeout: 60000 }, (error) => {
             if (error) {
                 reject(new Error(`ffmpeg error: ${error.message}`));
             } else {
