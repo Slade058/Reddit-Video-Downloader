@@ -55,10 +55,14 @@ Follow these steps to run the project locally.
     ```
 
 3.  **Start the application:**
-    Run both backend and frontend servers with a single command:
+    To run both backend and frontend together:
     ```bash
     npm run dev
     ```
+
+    Alternatively, you can run them in separate terminals:
+    - **Backend only:** `npm run server`
+    - **Frontend only:** `npm run client`
 
 4.  **Open in browser:**
     Navigate to `http://localhost:5173`

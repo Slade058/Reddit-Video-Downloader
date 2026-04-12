@@ -14,8 +14,18 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json());
 
-// User-Agent to look like a regular browser
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// User-Agent and Headers to look like a regular browser
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+const HEADERS = {
+    'User-Agent': UA,
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'Pragma': 'no-cache',
+    'Cache-Control': 'no-cache',
+};
 
 interface RedditVideo {
     fallback_url?: string;
@@ -57,6 +67,21 @@ interface MediaInfo {
 }
 
 /**
+ * Convert text to a safe URL/filename slug, specifically handling Turkish characters
+ */
+function slugify(text: string): string {
+    const trMap: { [key: string]: string } = {
+        'ç': 'c', 'Ç': 'C', 'ğ': 'g', 'Ğ': 'G', 'ı': 'i', 'İ': 'I',
+        'ö': 'o', 'Ö': 'O', 'ş': 's', 'Ş': 'S', 'ü': 'u', 'Ü': 'U'
+    };
+    return text.split('').map(c => trMap[c] || c).join('')
+        .replace(/[^a-zA-Z0-9\s\-_]/g, '')
+        .trim()
+        .replace(/\s+/g, '_')
+        .substring(0, 80);
+}
+
+/**
  * Normalize a Reddit URL to get the JSON endpoint
  */
 function getJsonUrl(url: string): string {
@@ -73,23 +98,35 @@ function getJsonUrl(url: string): string {
  */
 async function fetchRedditData(url: string): Promise<RedditPostData> {
     const jsonUrl = getJsonUrl(url);
+    console.log(`Fetching Reddit data: ${jsonUrl}`);
+    
     const res = await fetch(jsonUrl, {
-        headers: {
-            'User-Agent': UA,
-            'Accept': 'application/json',
-        },
+        headers: HEADERS,
     });
 
     if (!res.ok) {
-        throw new Error(`Reddit API returned ${res.status}: ${res.statusText}`);
+        if (res.status === 403) {
+            throw new Error('Reddit erişimi engelledi (403). Lütfen bir süre sonra tekrar deneyin.');
+        }
+        if (res.status === 429) {
+            throw new Error('Çok fazla istek gönderildi (429). Lütfen bekleyin.');
+        }
+        throw new Error(`Reddit API hatası (${res.status}): ${res.statusText}`);
     }
 
     const data = await res.json() as any;
+    
+    // Reddit returns an array of listings for comments/posts, or a single listing for some other endpoints
+    let post;
+    if (Array.isArray(data)) {
+        post = data[0]?.data?.children?.[0]?.data;
+    } else {
+        post = data?.data?.children?.[0]?.data;
+    }
 
-    // Reddit returns an array of listings
-    const post = data?.[0]?.data?.children?.[0]?.data;
     if (!post) {
-        throw new Error('Could not parse Reddit post data');
+        console.error('Parsed Data:', JSON.stringify(data).slice(0, 500));
+        throw new Error('Reddit post verisi ayrıştırılamadı. URL doğru mu?');
     }
 
     return post as RedditPostData;
@@ -109,19 +146,18 @@ async function extractFromRedditVideo(redditVideo: RedditVideo): Promise<MediaIn
     if (redditVideo.dash_url) {
         try {
             console.log(`Fetching DASH manifest: ${redditVideo.dash_url}`);
-            const res = await fetch(redditVideo.dash_url, { headers: { 'User-Agent': UA } });
+            const res = await fetch(redditVideo.dash_url, { headers: HEADERS });
             if (res.ok) {
                 const text = await res.text();
-                // Simple regex to find BaseURLs that look like audio
+                // Improved regex to find BaseURLs
                 const matches = text.match(/<BaseURL>(.*?)<\/BaseURL>/g);
                 if (matches) {
                     const found = matches
-                        .map(m => m.replace(/<\/?BaseURL>/g, ''))
-                        .filter(u => u.toLowerCase().includes('audio'));
+                        .map(m => m.replace(/<\/?BaseURL>/g, '').trim())
+                        .filter(u => u.toLowerCase().includes('audio') || u.includes('AUDIO'));
 
                     if (found.length > 0) {
                         console.log('Found audio in DASH manifest:', found);
-                        // Convert relative URLs to absolute if needed
                         const baseUrl = redditVideo.dash_url.substring(0, redditVideo.dash_url.lastIndexOf('/') + 1);
 
                         found.forEach(f => {
@@ -139,16 +175,29 @@ async function extractFromRedditVideo(redditVideo: RedditVideo): Promise<MediaIn
     // Method 2: Fallback to guessing if no audio found
     if (audioCandidates.length === 0) {
         console.log('Falling back to audio URL guessing');
-        audioCandidates = [
-            baseVideo.replace(/DASH_\d+\.mp4/, 'DASH_AUDIO_128.mp4').replace(/DASH_\d+/, 'DASH_AUDIO_128'),
-            baseVideo.replace(/DASH_\d+\.mp4/, 'DASH_AUDIO_64.mp4').replace(/DASH_\d+/, 'DASH_AUDIO_64'),
-            baseVideo.replace(/DASH_\d+\.mp4/, 'DASH_audio.mp4').replace(/DASH_\d+/, 'DASH_audio'),
-            baseVideo.replace(/DASH_\d+\.mp4/, 'audio.mp4').replace(/DASH_\d+/, 'audio'),
-        ];
+        const baseUrl = baseVideo.substring(0, baseVideo.lastIndexOf('/') + 1);
+        
+        // Handle cases where baseVideo might be DASH_720.mp4 or just DASH_720
+        const dashMatch = baseVideo.match(/DASH_(\d+)/);
+        if (dashMatch) {
+            audioCandidates = [
+                `${baseUrl}DASH_AUDIO_128.mp4`,
+                `${baseUrl}DASH_AUDIO_64.mp4`,
+                `${baseUrl}DASH_audio.mp4`,
+                `${baseUrl}audio.mp4`,
+                baseVideo.replace(/DASH_\d+(\.mp4)?/, 'DASH_AUDIO_128.mp4'),
+                baseVideo.replace(/DASH_\d+(\.mp4)?/, 'DASH_audio.mp4'),
+            ];
+        } else {
+            audioCandidates = [
+                baseVideo.replace(/\/[^/]+$/, '/DASH_AUDIO_128.mp4'),
+                baseVideo.replace(/\/[^/]+$/, '/DASH_audio.mp4'),
+            ];
+        }
     }
 
-    // Remove duplicates
-    const uniqueAudio = [...new Set(audioCandidates)];
+    // Remove duplicates and clean up
+    const uniqueAudio = [...new Set(audioCandidates)].map(u => u.split('?')[0]);
 
     return {
         videoUrl: baseVideo,
@@ -164,40 +213,49 @@ async function extractFromRedditVideo(redditVideo: RedditVideo): Promise<MediaIn
  * Extract video and audio URLs from Reddit post data
  */
 async function extractMediaUrls(post: RedditPostData): Promise<MediaInfo> {
-    const media = post.secure_media?.reddit_video || post.media?.reddit_video;
+    const video = post.secure_media?.reddit_video || 
+                  post.media?.reddit_video || 
+                  (post as any).preview?.reddit_video_preview;
 
-    if (!media) {
-        // Check if it's a crosspost
-        if (post.crosspost_parent_list && post.crosspost_parent_list.length > 0) {
-            const crosspost = post.crosspost_parent_list[0];
-            const crossMedia = crosspost.secure_media?.reddit_video || crosspost.media?.reddit_video;
-            if (crossMedia) {
-                return extractFromRedditVideo(crossMedia);
-            }
-        }
-        throw new Error('Bu post bir Reddit video içermiyor. Sadece Reddit tarafından barındırılan videolar desteklenir (v.redd.it).');
+    if (video) {
+        return extractFromRedditVideo(video);
     }
 
-    return extractFromRedditVideo(media);
+    // Check if it's a crosspost
+    if (post.crosspost_parent_list && post.crosspost_parent_list.length > 0) {
+        for (const crosspost of post.crosspost_parent_list) {
+            const crossVideo = crosspost.secure_media?.reddit_video || 
+                               crosspost.media?.reddit_video ||
+                               (crosspost as any).preview?.reddit_video_preview;
+            if (crossVideo) {
+                return extractFromRedditVideo(crossVideo);
+            }
+        }
+    }
+
+    throw new Error('Bu post bir Reddit video içermiyor veya desteklenmeyen bir formatta. Sadece Reddit tarafından barındırılan videolar desteklenir.');
 }
 
 /**
  * Download a file from URL to a local path
  */
 async function downloadFile(url: string, filePath: string): Promise<boolean> {
-    const res = await fetch(url, {
-        headers: { 'User-Agent': UA },
-    });
+    try {
+        const res = await fetch(url, {
+            headers: HEADERS,
+        });
 
-    if (!res.ok || !res.body) {
-        return false; // Audio might not exist for some videos
+        if (!res.ok || !res.body) {
+            return false;
+        }
+
+        const fileStream = fs.createWriteStream(filePath);
+        await pipeline(Readable.fromWeb(res.body as any), fileStream);
+        return true;
+    } catch (e) {
+        console.error(`Download failed for ${url}:`, e);
+        return false;
     }
-
-    const fileStream = fs.createWriteStream(filePath);
-    // Readable.fromWeb expects a Web stream, but type issues might persist depending on @types/node version.
-    // Casting to any or ignoring potentially if types mismatch, but usually works in recent Node.
-    await pipeline(Readable.fromWeb(res.body as any), fileStream);
-    return true;
 }
 
 /**
@@ -210,14 +268,18 @@ function mergeWithFfmpeg(videoPath: string, audioPath: string, outputPath: strin
             '-i', audioPath,
             '-c:v', 'copy',
             '-c:a', 'aac',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-shortest',
             '-strict', 'experimental',
             '-y',
             outputPath,
         ];
 
-        execFile('ffmpeg', args, { timeout: 60000 }, (error) => {
+        execFile('ffmpeg', args, { timeout: 60000 }, (error, stdout, stderr) => {
             if (error) {
-                reject(new Error(`ffmpeg error: ${error.message}`));
+                console.error('FFmpeg Stderr:', stderr);
+                reject(new Error(`FFmpeg birleştirme hatası: ${error.message}`));
             } else {
                 resolve(outputPath);
             }
@@ -247,7 +309,7 @@ app.post('/api/info', async (req: Request, res: Response): Promise<any> => {
         let finalUrl = url;
         if (url.includes('redd.it') && !url.includes('reddit.com')) {
             const redirectRes = await fetch(url, {
-                headers: { 'User-Agent': UA },
+                headers: HEADERS,
                 redirect: 'follow',
             });
             finalUrl = redirectRes.url;
@@ -295,7 +357,7 @@ app.post('/api/download', async (req: Request, res: Response): Promise<any> => {
         let finalUrl = url;
         if (url.includes('redd.it') && !url.includes('reddit.com')) {
             const redirectRes = await fetch(url, {
-                headers: { 'User-Agent': UA },
+                headers: HEADERS,
                 redirect: 'follow',
             });
             finalUrl = redirectRes.url;
@@ -337,10 +399,9 @@ app.post('/api/download', async (req: Request, res: Response): Promise<any> => {
         }
 
         // Generate a safe filename
-        const safeTitle = (post.title || 'reddit-video')
-            .replace(/[^a-zA-Z0-9\s\-_çğıöşüÇĞİÖŞÜ]/g, '')
-            .replace(/\s+/g, '_')
-            .substring(0, 80);
+        const safeTitle = slugify(post.title || 'reddit-video');
+
+        console.log(`Sending video: ${safeTitle}.mp4 (Path: ${finalPath})`);
 
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);

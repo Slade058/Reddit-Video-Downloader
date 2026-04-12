@@ -65,7 +65,10 @@ function App() {
       setVideoInfo(data)
     } catch (err: unknown) {
       console.error(err)
-      const message = err instanceof Error ? err.message : 'Bir hata oluştu'
+      let message = err instanceof Error ? err.message : 'Bir hata oluştu'
+      if (message.includes('403')) {
+        message = 'Reddit şu an isteği engelledi. Lütfen birkaç dakika bekleyip tekrar deneyin.'
+      }
       setError(message)
     } finally {
       setLoading(false)
